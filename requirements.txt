@@ -1,0 +1,10 @@
+# Shield Converter - ESP32 Binary Data to CSV Converter
+# Install with: pip install -r requirements.txt
+
+pydantic>=2.0
+pandas>=2.0
+typer>=0.9
+
+# Development dependencies (optional)
+# pytest>=7.0
+# pytest-cov>=4.0
