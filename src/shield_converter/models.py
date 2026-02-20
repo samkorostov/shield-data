@@ -18,6 +18,8 @@ class SensorType(str, Enum):
     CURRENT = "CURRENT"
     PRESSURE = "PRESSURE"
     TEMPERATURE = "TEMPERATURE"
+    MICROPHONE = "MICROPHONE"
+    PHOTODIODE = "PHOTODIODE"
 
 
 class HealthLabel(str, Enum):
@@ -33,7 +35,7 @@ class HealthLabel(str, Enum):
 
 class SensorInfo(BaseModel):
     """Sensor configuration from firmware meta.json."""
-    id: int = Field(description="Sensor ID (0-4)")
+    id: int = Field(description="Sensor ID (0-6)")
     name: str = Field(description="Sensor hardware name")
     type: SensorType = Field(description="Sensor type category")
     rate: int = Field(description="Sampling rate in Hz")
@@ -94,7 +96,7 @@ class SessionRecord(BaseModel):
     """
     session_id: str = Field(description="Session/run identifier")
     unit_id: str = Field(description="Physical unit identifier (e.g., unit_0001)")
-    sensor_name: str = Field(description="Sensor name (imu, vibration, current, pressure, temperature)")
+    sensor_name: str = Field(description="Sensor name (imu, vibration, current, pressure, temperature, microphone, photodiode)")
     file_name: str = Field(description="Output CSV file name")
     file_format: str = Field(default="csv", description="Output file format")
     start_time_utc: datetime = Field(description="Session start time in UTC")

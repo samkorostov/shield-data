@@ -29,9 +29,9 @@ from .models import (
 FAST_RECORD_FORMAT = "<I B 3x f"  # < = little-endian, I = uint32, B = uint8, 3x = 3 pad bytes, f = float
 FAST_RECORD_SIZE = struct.calcsize(FAST_RECORD_FORMAT)  # Should be 12 bytes
 
-# Medium data: uint32_t timestamp + float current
-MEDIUM_RECORD_FORMAT = "<I f"
-MEDIUM_RECORD_SIZE = struct.calcsize(MEDIUM_RECORD_FORMAT)  # Should be 8 bytes
+# Medium data: uint32_t timestamp + uint8_t sensor_id + uint8_t[3] reserved + float data
+MEDIUM_RECORD_FORMAT = "<I B 3x f"
+MEDIUM_RECORD_SIZE = struct.calcsize(MEDIUM_RECORD_FORMAT)  # Should be 12 bytes
 
 # Slow data: uint32_t timestamp + uint8_t sensor_id + uint8_t[3] reserved + float data
 SLOW_RECORD_FORMAT = "<I B 3x f"
@@ -45,6 +45,8 @@ SENSOR_ID_TO_NAME = {
     2: "current",
     3: "pressure",
     4: "temperature",
+    5: "microphone",
+    6: "photodiode",
 }
 
 SENSOR_NAME_TO_INFO = {
@@ -53,6 +55,8 @@ SENSOR_NAME_TO_INFO = {
     "current": {"id": 2, "type": SensorType.CURRENT, "rate": 200, "unit": "A"},
     "pressure": {"id": 3, "type": SensorType.PRESSURE, "rate": 50, "unit": "kPa"},
     "temperature": {"id": 4, "type": SensorType.TEMPERATURE, "rate": 50, "unit": "C"},
+    "microphone": {"id": 5, "type": SensorType.MICROPHONE, "rate": 1000, "unit": "dBFS"},
+    "photodiode": {"id": 6, "type": SensorType.PHOTODIODE, "rate": 200, "unit": "V"},
 }
 
 # ==================== Binary Parsers ====================
@@ -79,7 +83,7 @@ def parse_fast_data(filepath: Path) -> List[Tuple[int, int, float]]:
     return records
 
 
-def parse_medium_data(filepath: Path) -> List[Tuple[int, float]]:
+def parse_medium_data(filepath: Path) -> List[Tuple[int, int, float]]:
     """
     Parse medium_data.bin file.
 
@@ -87,7 +91,7 @@ def parse_medium_data(filepath: Path) -> List[Tuple[int, float]]:
         filepath: Path to medium_data.bin
 
     Returns:
-        List of (timestamp_ms, current) tuples
+        List of (timestamp_ms, sensor_id, value) tuples
     """
     records = []
     with open(filepath, "rb") as f:
@@ -95,8 +99,8 @@ def parse_medium_data(filepath: Path) -> List[Tuple[int, float]]:
             data = f.read(MEDIUM_RECORD_SIZE)
             if len(data) < MEDIUM_RECORD_SIZE:
                 break
-            timestamp_ms, current = struct.unpack(MEDIUM_RECORD_FORMAT, data)
-            records.append((timestamp_ms, current))
+            timestamp_ms, sensor_id, value = struct.unpack(MEDIUM_RECORD_FORMAT, data)
+            records.append((timestamp_ms, sensor_id, value))
     return records
 
 
@@ -315,7 +319,7 @@ def convert_run(
     output_files: Dict[str, Path] = {}
     all_dataframes: Dict[str, pd.DataFrame] = {}
 
-    # Process fast data (IMU + Vibration)
+    # Process fast data (IMU + Vibration + Microphone)
     fast_path = run_dir / "fast_data.bin"
     if fast_path.exists():
         if verbose:
@@ -323,10 +327,10 @@ def convert_run(
         records = parse_fast_data(fast_path)
         if verbose:
             print(f"    Read {len(records)} records")
-        sensor_dfs = split_by_sensor(records, [0, 1])  # IMU=0, Vibration=1
+        sensor_dfs = split_by_sensor(records, [0, 1, 5])  # IMU=0, Vibration=1, Microphone=5
         all_dataframes.update(sensor_dfs)
 
-    # Process medium data (Current)
+    # Process medium data (Current + Photodiode)
     medium_path = run_dir / "medium_data.bin"
     if medium_path.exists():
         if verbose:
@@ -334,9 +338,8 @@ def convert_run(
         records = parse_medium_data(medium_path)
         if verbose:
             print(f"    Read {len(records)} records")
-        if records:
-            df = pd.DataFrame(records, columns=["timestamp_ms", "value"])
-            all_dataframes["current"] = df
+        sensor_dfs = split_by_sensor(records, [2, 6])  # Current=2, Photodiode=6
+        all_dataframes.update(sensor_dfs)
 
     # Process slow data (Pressure + Temperature)
     slow_path = run_dir / "slow_data.bin"
