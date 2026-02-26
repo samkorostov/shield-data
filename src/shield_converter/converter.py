@@ -47,6 +47,9 @@ SENSOR_ID_TO_NAME = {
     4: "temperature",
     5: "microphone",
     6: "photodiode",
+    7: "magnetometer",
+    8: "gyroscope",
+    9: "accelerometer",
 }
 
 SENSOR_NAME_TO_INFO = {
@@ -57,6 +60,9 @@ SENSOR_NAME_TO_INFO = {
     "temperature": {"id": 4, "type": SensorType.TEMPERATURE, "rate": 50, "unit": "C"},
     "microphone": {"id": 5, "type": SensorType.MICROPHONE, "rate": 1000, "unit": "dBFS"},
     "photodiode": {"id": 6, "type": SensorType.PHOTODIODE, "rate": 200, "unit": "V"},
+    "magnetometer": {"id": 7, "type": SensorType.MAGNETOMETER, "rate": 1000, "unit": "uT"},
+    "gyroscope": {"id": 8, "type": SensorType.GYROSCOPE, "rate": 1000, "unit": "rad/s"},
+    "accelerometer": {"id": 9, "type": SensorType.ACCELEROMETER, "rate": 1000, "unit": "m/s^2"},
 }
 
 # ==================== Binary Parsers ====================
@@ -327,7 +333,7 @@ def convert_run(
         records = parse_fast_data(fast_path)
         if verbose:
             print(f"    Read {len(records)} records")
-        sensor_dfs = split_by_sensor(records, [0, 1, 5])  # IMU=0, Vibration=1, Microphone=5
+        sensor_dfs = split_by_sensor(records, [0, 1, 5, 7, 8, 9])  # IMU=0, Vibration=1, Microphone=5, Magnetometer=7, Gyroscope=8, Accelerometer=9
         all_dataframes.update(sensor_dfs)
 
     # Process medium data (Current + Photodiode)
