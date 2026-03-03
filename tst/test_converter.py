@@ -17,6 +17,7 @@ from shield_converter.converter import (
     parse_medium_data,
     parse_slow_data,
     split_by_sensor,
+    split_fast_by_sensor,
     validate_run,
 )
 from shield_converter.models import HealthLabel
@@ -26,12 +27,12 @@ class TestRecordSizes:
     """Verify struct sizes match firmware expectations."""
 
     def test_fast_record_size(self):
-        # uint32 + uint8 + 3 padding + float = 4 + 1 + 3 + 4 = 12
-        assert FAST_RECORD_SIZE == 12
+        # uint32 + uint8 + 3 padding + 3 floats = 4 + 1 + 3 + 12 = 20
+        assert FAST_RECORD_SIZE == 20
 
     def test_medium_record_size(self):
-        # uint32 + float = 4 + 4 = 8
-        assert MEDIUM_RECORD_SIZE == 8
+        # uint32 + uint8 + 3 padding + float = 4 + 1 + 3 + 4 = 12
+        assert MEDIUM_RECORD_SIZE == 12
 
     def test_slow_record_size(self):
         # uint32 + uint8 + 3 padding + float = 4 + 1 + 3 + 4 = 12
@@ -46,10 +47,20 @@ class TestParseFastData:
         records = parse_fast_data(filepath)
 
         assert len(records) == 200  # 100 IMU + 100 Vibration
-        # Check first IMU record
-        assert records[0] == (0, 0, pytest.approx(0.5, rel=1e-5))
-        # Check first Vibration record
-        assert records[1] == (0, 1, pytest.approx(0.0, rel=1e-5))
+        # Check first IMU record (3-axis)
+        ts, sid, d0, d1, d2 = records[0]
+        assert ts == 0
+        assert sid == 0
+        assert d0 == pytest.approx(0.5, rel=1e-5)
+        assert d1 == pytest.approx(0.1, rel=1e-5)
+        assert d2 == pytest.approx(-0.3, rel=1e-5)
+        # Check first Vibration record (scalar, d1/d2 = 0)
+        ts, sid, d0, d1, d2 = records[1]
+        assert ts == 0
+        assert sid == 1
+        assert d0 == pytest.approx(0.0, rel=1e-5)
+        assert d1 == pytest.approx(0.0)
+        assert d2 == pytest.approx(0.0)
 
     def test_parse_empty_file(self, tmp_path):
         filepath = tmp_path / "empty.bin"
@@ -61,8 +72,7 @@ class TestParseFastData:
     def test_parse_partial_record(self, tmp_path):
         """Partial records at end of file should be ignored."""
         filepath = tmp_path / "partial.bin"
-        # Write one complete record + partial data
-        data = struct.pack("<I B 3x f", 0, 0, 1.0) + b"\x00\x00"
+        data = struct.pack("<I B 3x 3f", 0, 0, 1.0, 2.0, 3.0) + b"\x00\x00"
         filepath.write_bytes(data)
 
         records = parse_fast_data(filepath)
@@ -76,12 +86,14 @@ class TestParseMediumData:
 
         records = parse_medium_data(filepath)
 
-        assert len(records) == 50
-        # Check first record
-        assert records[0] == (0, pytest.approx(1.5, rel=1e-5))
+        assert len(records) == 100  # 50 Current + 50 Photodiode
+        # Check first Current record (sensor_id=2)
+        assert records[0] == (0, 2, pytest.approx(1.5, rel=1e-5))
+        # Check first Photodiode record (sensor_id=6)
+        assert records[1] == (0, 6, pytest.approx(0.8, rel=1e-5))
         # Check timestamp progression
-        assert records[1][0] == 5
-        assert records[2][0] == 10
+        assert records[2][0] == 5
+        assert records[4][0] == 10
 
 
 class TestParseSlowData:
@@ -106,13 +118,19 @@ class TestSplitBySensor:
         filepath.write_bytes(fast_data_bytes)
         records = parse_fast_data(filepath)
 
-        sensor_dfs = split_by_sensor(records, [0, 1])
+        sensor_dfs = split_fast_by_sensor(records, [0, 1])
 
         assert "imu" in sensor_dfs
         assert "vibration" in sensor_dfs
         assert len(sensor_dfs["imu"]) == 100
         assert len(sensor_dfs["vibration"]) == 100
-        assert list(sensor_dfs["imu"].columns) == ["timestamp_ms", "value"]
+        # IMU is 3-axis
+        assert list(sensor_dfs["imu"].columns) == ["timestamp_ms", "x", "y", "z"]
+        assert sensor_dfs["imu"].iloc[0]["x"] == pytest.approx(0.5, rel=1e-5)
+        assert sensor_dfs["imu"].iloc[0]["y"] == pytest.approx(0.1, rel=1e-5)
+        assert sensor_dfs["imu"].iloc[0]["z"] == pytest.approx(-0.3, rel=1e-5)
+        # Vibration is scalar
+        assert list(sensor_dfs["vibration"].columns) == ["timestamp_ms", "value"]
 
     def test_split_slow_data(self, tmp_path, slow_data_bytes):
         filepath = tmp_path / "slow_data.bin"
@@ -172,20 +190,25 @@ class TestConvertRun:
             output_dir=output_directory,
         )
 
-        assert len(output_files) == 5
+        assert len(output_files) == 6
         assert "imu" in output_files
         assert "vibration" in output_files
         assert "current" in output_files
+        assert "photodiode" in output_files
         assert "pressure" in output_files
         assert "temperature" in output_files
 
         # Check CSV files exist and have correct content
         imu_df = pd.read_csv(output_files["imu"])
         assert len(imu_df) == 100
-        assert list(imu_df.columns) == ["timestamp_ms", "value"]
+        assert list(imu_df.columns) == ["timestamp_ms", "x", "y", "z"]
+
+        # Check scalar sensor CSV
+        vibration_df = pd.read_csv(output_files["vibration"])
+        assert list(vibration_df.columns) == ["timestamp_ms", "value"]
 
         # Check session metadata
-        assert len(sessions) == 5
+        assert len(sessions) == 6
         imu_session = next(s for s in sessions if s.sensor_name == "imu")
         assert imu_session.sampling_rate_hz == 1000
         assert imu_session.units == "m/s^2"
@@ -196,8 +219,8 @@ class TestConvertRun:
             output_dir=output_directory,
         )
 
-        assert len(output_files) == 5
-        assert len(sessions) == 5
+        assert len(output_files) == 6
+        assert len(sessions) == 6
 
     def test_convert_with_health_label(self, run_directory, output_directory):
         _, sessions = convert_run(
@@ -226,7 +249,9 @@ class TestConvertRun:
         data_dir = output_directory / "data" / "UNIT_0001_RUN_001"
         assert data_dir.exists()
         assert (data_dir / "imu.csv").exists()
+        assert (data_dir / "vibration.csv").exists()
         assert (data_dir / "current.csv").exists()
+        assert (data_dir / "photodiode.csv").exists()
 
 
 class TestValidateRun:

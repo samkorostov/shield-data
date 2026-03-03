@@ -16,19 +16,25 @@ def fast_data_bytes() -> bytes:
     """Generate synthetic fast_data.bin content (IMU + Vibration)."""
     data = b""
     for i in range(100):
-        # IMU sample (sensor_id=0)
-        data += struct.pack("<I B 3x f", i, 0, 0.5 + i * 0.01)
-        # Vibration sample (sensor_id=1)
-        data += struct.pack("<I B 3x f", i, 1, float(i % 2))
+        # IMU sample (sensor_id=0, 3-axis: x, y, z)
+        data += struct.pack(
+            "<I B 3x 3f", i, 0,
+            0.5 + i * 0.01, 0.1 + i * 0.01, -0.3 + i * 0.01,
+        )
+        # Vibration sample (sensor_id=1, scalar: data[0] only, rest zero)
+        data += struct.pack("<I B 3x 3f", i, 1, float(i % 2), 0.0, 0.0)
     return data
 
 
 @pytest.fixture
 def medium_data_bytes() -> bytes:
-    """Generate synthetic medium_data.bin content (Current)."""
+    """Generate synthetic medium_data.bin content (Current + Photodiode)."""
     data = b""
     for i in range(50):
-        data += struct.pack("<I f", i * 5, 1.5 + i * 0.02)
+        # Current sample (sensor_id=2)
+        data += struct.pack("<I B 3x f", i * 5, 2, 1.5 + i * 0.02)
+        # Photodiode sample (sensor_id=6)
+        data += struct.pack("<I B 3x f", i * 5, 6, 0.8 + i * 0.01)
     return data
 
 
@@ -77,7 +83,7 @@ def sample_metadata() -> dict:
             "slow": "slow_data.bin",
         },
         "statistics": {
-            "total_samples": {"fast": 200, "medium": 50, "slow": 40},
+            "total_samples": {"fast": 200, "medium": 100, "slow": 40},
             "duration_ms": 600000,
             "queue_overruns": 0,
             "sd_write_errors": 0,

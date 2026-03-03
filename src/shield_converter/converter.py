@@ -25,9 +25,9 @@ from .models import (
 # ==================== Binary Record Formats ====================
 # Based on data_types.h with __attribute__((packed))
 
-# Fast data: uint32_t timestamp + uint8_t sensor_id + uint8_t[3] reserved + float data
-FAST_RECORD_FORMAT = "<I B 3x f"  # < = little-endian, I = uint32, B = uint8, 3x = 3 pad bytes, f = float
-FAST_RECORD_SIZE = struct.calcsize(FAST_RECORD_FORMAT)  # Should be 12 bytes
+# Fast data: uint32_t timestamp + uint8_t sensor_id + uint8_t[3] reserved + float data[3]
+FAST_RECORD_FORMAT = "<I B 3x 3f"  # < = little-endian, I = uint32, B = uint8, 3x = 3 pad bytes, 3f = 3 floats
+FAST_RECORD_SIZE = struct.calcsize(FAST_RECORD_FORMAT)  # 20 bytes
 
 # Medium data: uint32_t timestamp + uint8_t sensor_id + uint8_t[3] reserved + float data
 MEDIUM_RECORD_FORMAT = "<I B 3x f"
@@ -52,6 +52,8 @@ SENSOR_ID_TO_NAME = {
     9: "accelerometer",
 }
 
+THREE_AXIS_SENSOR_IDS = {0, 7, 8, 9}  # imu, magnetometer, gyroscope, accelerometer
+
 SENSOR_NAME_TO_INFO = {
     "imu": {"id": 0, "type": SensorType.IMU, "rate": 1000, "unit": "m/s^2"},
     "vibration": {"id": 1, "type": SensorType.VIBRATION, "rate": 1000, "unit": "binary"},
@@ -68,15 +70,18 @@ SENSOR_NAME_TO_INFO = {
 # ==================== Binary Parsers ====================
 
 
-def parse_fast_data(filepath: Path) -> List[Tuple[int, int, float]]:
+def parse_fast_data(filepath: Path) -> List[Tuple[int, int, float, float, float]]:
     """
     Parse fast_data.bin file.
+
+    Each record is 20 bytes: uint32 timestamp_ms, uint8 sensor_id,
+    3 reserved bytes, float data[0], float data[1], float data[2].
 
     Args:
         filepath: Path to fast_data.bin
 
     Returns:
-        List of (timestamp_ms, sensor_id, value) tuples
+        List of (timestamp_ms, sensor_id, d0, d1, d2) tuples
     """
     records = []
     with open(filepath, "rb") as f:
@@ -84,8 +89,10 @@ def parse_fast_data(filepath: Path) -> List[Tuple[int, int, float]]:
             data = f.read(FAST_RECORD_SIZE)
             if len(data) < FAST_RECORD_SIZE:
                 break
-            timestamp_ms, sensor_id, value = struct.unpack(FAST_RECORD_FORMAT, data)
-            records.append((timestamp_ms, sensor_id, value))
+            timestamp_ms, sensor_id, d0, d1, d2 = struct.unpack(
+                FAST_RECORD_FORMAT, data
+            )
+            records.append((timestamp_ms, sensor_id, d0, d1, d2))
     return records
 
 
@@ -134,11 +141,60 @@ def parse_slow_data(filepath: Path) -> List[Tuple[int, int, float]]:
 # ==================== Data Processing ====================
 
 
+def split_fast_by_sensor(
+    records: List[Tuple[int, int, float, float, float]], sensor_ids: List[int]
+) -> Dict[str, pd.DataFrame]:
+    """
+    Split fast data records by sensor ID into separate DataFrames.
+
+    Three-axis sensors (IMU, magnetometer, gyroscope, accelerometer) produce
+    DataFrames with columns [timestamp_ms, x, y, z].
+    Scalar sensors produce DataFrames with columns [timestamp_ms, value].
+
+    Args:
+        records: List of (timestamp_ms, sensor_id, d0, d1, d2) tuples
+        sensor_ids: List of expected sensor IDs in fast data tier
+
+    Returns:
+        Dictionary mapping sensor name to DataFrame
+    """
+    vector_data: Dict[str, list] = {}
+    scalar_data: Dict[str, list] = {}
+
+    for sid in sensor_ids:
+        name = SENSOR_ID_TO_NAME[sid]
+        if sid in THREE_AXIS_SENSOR_IDS:
+            vector_data[name] = []
+        else:
+            scalar_data[name] = []
+
+    for timestamp_ms, sensor_id, d0, d1, d2 in records:
+        if sensor_id not in SENSOR_ID_TO_NAME:
+            continue
+        name = SENSOR_ID_TO_NAME[sensor_id]
+        if sensor_id in THREE_AXIS_SENSOR_IDS and name in vector_data:
+            vector_data[name].append((timestamp_ms, d0, d1, d2))
+        elif name in scalar_data:
+            scalar_data[name].append((timestamp_ms, d0))
+
+    result = {}
+    for name, data in vector_data.items():
+        if data:
+            result[name] = pd.DataFrame(data, columns=["timestamp_ms", "x", "y", "z"])
+    for name, data in scalar_data.items():
+        if data:
+            result[name] = pd.DataFrame(data, columns=["timestamp_ms", "value"])
+
+    return result
+
+
 def split_by_sensor(
     records: List[Tuple[int, int, float]], sensor_ids: List[int]
 ) -> Dict[str, pd.DataFrame]:
     """
     Split records by sensor ID into separate DataFrames.
+
+    Used for medium_data and slow_data which have scalar values only.
 
     Args:
         records: List of (timestamp_ms, sensor_id, value) tuples
@@ -333,7 +389,7 @@ def convert_run(
         records = parse_fast_data(fast_path)
         if verbose:
             print(f"    Read {len(records)} records")
-        sensor_dfs = split_by_sensor(records, [0, 1, 5, 7, 8, 9])  # IMU=0, Vibration=1, Microphone=5, Magnetometer=7, Gyroscope=8, Accelerometer=9
+        sensor_dfs = split_fast_by_sensor(records, [0, 1, 5, 7, 8, 9])  # IMU=0, Vibration=1, Microphone=5, Magnetometer=7, Gyroscope=8, Accelerometer=9
         all_dataframes.update(sensor_dfs)
 
     # Process medium data (Current + Photodiode)

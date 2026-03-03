@@ -30,7 +30,7 @@ htmlcov/
 
 # Output directories
 output/
-
+data/
 # OS files
 .DS_Store
 Thumbs.db
