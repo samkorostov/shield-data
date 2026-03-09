@@ -7,11 +7,11 @@ and converts them to per-sensor CSV files.
 
 import json
 import re
-import struct
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from .models import (
@@ -26,16 +26,40 @@ from .models import (
 # Based on data_types.h with __attribute__((packed))
 
 # Fast data: uint32_t timestamp + uint8_t sensor_id + uint8_t[3] reserved + float data[3]
-FAST_RECORD_FORMAT = "<I B 3x 3f"  # < = little-endian, I = uint32, B = uint8, 3x = 3 pad bytes, 3f = 3 floats
-FAST_RECORD_SIZE = struct.calcsize(FAST_RECORD_FORMAT)  # 20 bytes
+FAST_RECORD_DTYPE = np.dtype(
+    [
+        ("timestamp_ms", "<u4"),
+        ("sensor_id", "u1"),
+        ("_reserved", "u1", (3,)),
+        ("data", "<f4", (3,)),
+    ],
+    align=False,
+)
+FAST_RECORD_SIZE = FAST_RECORD_DTYPE.itemsize  # 20 bytes
 
 # Medium data: uint32_t timestamp + uint8_t sensor_id + uint8_t[3] reserved + float data
-MEDIUM_RECORD_FORMAT = "<I B 3x f"
-MEDIUM_RECORD_SIZE = struct.calcsize(MEDIUM_RECORD_FORMAT)  # Should be 12 bytes
+MEDIUM_RECORD_DTYPE = np.dtype(
+    [
+        ("timestamp_ms", "<u4"),
+        ("sensor_id", "u1"),
+        ("_reserved", "u1", (3,)),
+        ("value", "<f4"),
+    ],
+    align=False,
+)
+MEDIUM_RECORD_SIZE = MEDIUM_RECORD_DTYPE.itemsize  # 12 bytes
 
 # Slow data: uint32_t timestamp + uint8_t sensor_id + uint8_t[3] reserved + float data
-SLOW_RECORD_FORMAT = "<I B 3x f"
-SLOW_RECORD_SIZE = struct.calcsize(SLOW_RECORD_FORMAT)  # Should be 12 bytes
+SLOW_RECORD_DTYPE = np.dtype(
+    [
+        ("timestamp_ms", "<u4"),
+        ("sensor_id", "u1"),
+        ("_reserved", "u1", (3,)),
+        ("value", "<f4"),
+    ],
+    align=False,
+)
+SLOW_RECORD_SIZE = SLOW_RECORD_DTYPE.itemsize  # 12 bytes
 
 # ==================== Sensor ID Mapping ====================
 
@@ -56,21 +80,50 @@ THREE_AXIS_SENSOR_IDS = {0, 7, 8, 9}  # imu, magnetometer, gyroscope, accelerome
 
 SENSOR_NAME_TO_INFO = {
     "imu": {"id": 0, "type": SensorType.IMU, "rate": 1000, "unit": "m/s^2"},
-    "vibration": {"id": 1, "type": SensorType.VIBRATION, "rate": 1000, "unit": "binary"},
+    "vibration": {
+        "id": 1,
+        "type": SensorType.VIBRATION,
+        "rate": 1000,
+        "unit": "binary",
+    },
     "current": {"id": 2, "type": SensorType.CURRENT, "rate": 200, "unit": "A"},
     "pressure": {"id": 3, "type": SensorType.PRESSURE, "rate": 50, "unit": "kPa"},
     "temperature": {"id": 4, "type": SensorType.TEMPERATURE, "rate": 50, "unit": "C"},
-    "microphone": {"id": 5, "type": SensorType.MICROPHONE, "rate": 1000, "unit": "dBFS"},
+    "microphone": {
+        "id": 5,
+        "type": SensorType.MICROPHONE,
+        "rate": 1000,
+        "unit": "dBFS",
+    },
     "photodiode": {"id": 6, "type": SensorType.PHOTODIODE, "rate": 200, "unit": "V"},
-    "magnetometer": {"id": 7, "type": SensorType.MAGNETOMETER, "rate": 1000, "unit": "uT"},
+    "magnetometer": {
+        "id": 7,
+        "type": SensorType.MAGNETOMETER,
+        "rate": 1000,
+        "unit": "uT",
+    },
     "gyroscope": {"id": 8, "type": SensorType.GYROSCOPE, "rate": 1000, "unit": "rad/s"},
-    "accelerometer": {"id": 9, "type": SensorType.ACCELEROMETER, "rate": 1000, "unit": "m/s^2"},
+    "accelerometer": {
+        "id": 9,
+        "type": SensorType.ACCELEROMETER,
+        "rate": 1000,
+        "unit": "m/s^2",
+    },
 }
 
 # ==================== Binary Parsers ====================
 
 
-def parse_fast_data(filepath: Path) -> List[Tuple[int, int, float, float, float]]:
+def _read_structured_records(filepath: Path, dtype: np.dtype) -> np.ndarray:
+    """Read only full records from a binary file into a NumPy structured array."""
+    file_size = filepath.stat().st_size
+    record_count = file_size // dtype.itemsize
+    if record_count == 0:
+        return np.empty(0, dtype=dtype)
+    return np.fromfile(filepath, dtype=dtype, count=record_count)
+
+
+def parse_fast_data(filepath: Path) -> np.ndarray:
     """
     Parse fast_data.bin file.
 
@@ -81,22 +134,12 @@ def parse_fast_data(filepath: Path) -> List[Tuple[int, int, float, float, float]
         filepath: Path to fast_data.bin
 
     Returns:
-        List of (timestamp_ms, sensor_id, d0, d1, d2) tuples
+        Structured NumPy array with fields timestamp_ms, sensor_id, and data[3]
     """
-    records = []
-    with open(filepath, "rb") as f:
-        while True:
-            data = f.read(FAST_RECORD_SIZE)
-            if len(data) < FAST_RECORD_SIZE:
-                break
-            timestamp_ms, sensor_id, d0, d1, d2 = struct.unpack(
-                FAST_RECORD_FORMAT, data
-            )
-            records.append((timestamp_ms, sensor_id, d0, d1, d2))
-    return records
+    return _read_structured_records(filepath, FAST_RECORD_DTYPE)
 
 
-def parse_medium_data(filepath: Path) -> List[Tuple[int, int, float]]:
+def parse_medium_data(filepath: Path) -> np.ndarray:
     """
     Parse medium_data.bin file.
 
@@ -104,20 +147,12 @@ def parse_medium_data(filepath: Path) -> List[Tuple[int, int, float]]:
         filepath: Path to medium_data.bin
 
     Returns:
-        List of (timestamp_ms, sensor_id, value) tuples
+        Structured NumPy array with fields timestamp_ms, sensor_id, and value
     """
-    records = []
-    with open(filepath, "rb") as f:
-        while True:
-            data = f.read(MEDIUM_RECORD_SIZE)
-            if len(data) < MEDIUM_RECORD_SIZE:
-                break
-            timestamp_ms, sensor_id, value = struct.unpack(MEDIUM_RECORD_FORMAT, data)
-            records.append((timestamp_ms, sensor_id, value))
-    return records
+    return _read_structured_records(filepath, MEDIUM_RECORD_DTYPE)
 
 
-def parse_slow_data(filepath: Path) -> List[Tuple[int, int, float]]:
+def parse_slow_data(filepath: Path) -> np.ndarray:
     """
     Parse slow_data.bin file.
 
@@ -125,24 +160,16 @@ def parse_slow_data(filepath: Path) -> List[Tuple[int, int, float]]:
         filepath: Path to slow_data.bin
 
     Returns:
-        List of (timestamp_ms, sensor_id, value) tuples
+        Structured NumPy array with fields timestamp_ms, sensor_id, and value
     """
-    records = []
-    with open(filepath, "rb") as f:
-        while True:
-            data = f.read(SLOW_RECORD_SIZE)
-            if len(data) < SLOW_RECORD_SIZE:
-                break
-            timestamp_ms, sensor_id, value = struct.unpack(SLOW_RECORD_FORMAT, data)
-            records.append((timestamp_ms, sensor_id, value))
-    return records
+    return _read_structured_records(filepath, SLOW_RECORD_DTYPE)
 
 
 # ==================== Data Processing ====================
 
 
 def split_fast_by_sensor(
-    records: List[Tuple[int, int, float, float, float]], sensor_ids: List[int]
+    records: np.ndarray, sensor_ids: List[int]
 ) -> Dict[str, pd.DataFrame]:
     """
     Split fast data records by sensor ID into separate DataFrames.
@@ -152,44 +179,54 @@ def split_fast_by_sensor(
     Scalar sensors produce DataFrames with columns [timestamp_ms, value].
 
     Args:
-        records: List of (timestamp_ms, sensor_id, d0, d1, d2) tuples
+        records: Structured NumPy array from parse_fast_data
         sensor_ids: List of expected sensor IDs in fast data tier
 
     Returns:
         Dictionary mapping sensor name to DataFrame
     """
-    vector_data: Dict[str, list] = {}
-    scalar_data: Dict[str, list] = {}
+    if records.size == 0:
+        return {}
+
+    result: Dict[str, pd.DataFrame] = {}
+    timestamps = records["timestamp_ms"]
+    sensor_ids_arr = records["sensor_id"]
+    values = records["data"]
 
     for sid in sensor_ids:
-        name = SENSOR_ID_TO_NAME[sid]
-        if sid in THREE_AXIS_SENSOR_IDS:
-            vector_data[name] = []
-        else:
-            scalar_data[name] = []
-
-    for timestamp_ms, sensor_id, d0, d1, d2 in records:
-        if sensor_id not in SENSOR_ID_TO_NAME:
+        name = SENSOR_ID_TO_NAME.get(sid)
+        if name is None:
             continue
-        name = SENSOR_ID_TO_NAME[sensor_id]
-        if sensor_id in THREE_AXIS_SENSOR_IDS and name in vector_data:
-            vector_data[name].append((timestamp_ms, d0, d1, d2))
-        elif name in scalar_data:
-            scalar_data[name].append((timestamp_ms, d0))
 
-    result = {}
-    for name, data in vector_data.items():
-        if data:
-            result[name] = pd.DataFrame(data, columns=["timestamp_ms", "x", "y", "z"])
-    for name, data in scalar_data.items():
-        if data:
-            result[name] = pd.DataFrame(data, columns=["timestamp_ms", "value"])
+        mask = sensor_ids_arr == sid
+        if not np.any(mask):
+            continue
+
+        sensor_timestamps = timestamps[mask]
+        sensor_values = values[mask]
+
+        if sid in THREE_AXIS_SENSOR_IDS:
+            result[name] = pd.DataFrame(
+                {
+                    "timestamp_ms": sensor_timestamps,
+                    "x": sensor_values[:, 0],
+                    "y": sensor_values[:, 1],
+                    "z": sensor_values[:, 2],
+                }
+            )
+        else:
+            result[name] = pd.DataFrame(
+                {
+                    "timestamp_ms": sensor_timestamps,
+                    "value": sensor_values[:, 0],
+                }
+            )
 
     return result
 
 
 def split_by_sensor(
-    records: List[Tuple[int, int, float]], sensor_ids: List[int]
+    records: np.ndarray, sensor_ids: List[int]
 ) -> Dict[str, pd.DataFrame]:
     """
     Split records by sensor ID into separate DataFrames.
@@ -197,27 +234,35 @@ def split_by_sensor(
     Used for medium_data and slow_data which have scalar values only.
 
     Args:
-        records: List of (timestamp_ms, sensor_id, value) tuples
+        records: Structured NumPy array from parse_medium_data/parse_slow_data
         sensor_ids: List of expected sensor IDs in this data tier
 
     Returns:
         Dictionary mapping sensor name to DataFrame with timestamp_ms and value columns
     """
-    sensor_data: Dict[str, List[Tuple[int, float]]] = {
-        SENSOR_ID_TO_NAME[sid]: [] for sid in sensor_ids
-    }
+    if records.size == 0:
+        return {}
 
-    for timestamp_ms, sensor_id, value in records:
-        if sensor_id in SENSOR_ID_TO_NAME:
-            sensor_name = SENSOR_ID_TO_NAME[sensor_id]
-            if sensor_name in sensor_data:
-                sensor_data[sensor_name].append((timestamp_ms, value))
+    result: Dict[str, pd.DataFrame] = {}
+    timestamps = records["timestamp_ms"]
+    sensor_ids_arr = records["sensor_id"]
+    values = records["value"]
 
-    result = {}
-    for sensor_name, data in sensor_data.items():
-        if data:
-            df = pd.DataFrame(data, columns=["timestamp_ms", "value"])
-            result[sensor_name] = df
+    for sid in sensor_ids:
+        sensor_name = SENSOR_ID_TO_NAME.get(sid)
+        if sensor_name is None:
+            continue
+
+        mask = sensor_ids_arr == sid
+        if not np.any(mask):
+            continue
+
+        result[sensor_name] = pd.DataFrame(
+            {
+                "timestamp_ms": timestamps[mask],
+                "value": values[mask],
+            }
+        )
 
     return result
 
@@ -389,7 +434,9 @@ def convert_run(
         records = parse_fast_data(fast_path)
         if verbose:
             print(f"    Read {len(records)} records")
-        sensor_dfs = split_fast_by_sensor(records, [0, 1, 5, 7, 8, 9])  # IMU=0, Vibration=1, Microphone=5, Magnetometer=7, Gyroscope=8, Accelerometer=9
+        sensor_dfs = split_fast_by_sensor(
+            records, [0, 1, 5, 7, 8, 9]
+        )  # IMU=0, Vibration=1, Microphone=5, Magnetometer=7, Gyroscope=8, Accelerometer=9
         all_dataframes.update(sensor_dfs)
 
     # Process medium data (Current + Photodiode)
@@ -565,7 +612,9 @@ def validate_run(run_dir: Path, verbose: bool = False) -> Dict[str, any]:
                 "total_samples": meta.statistics.total_samples,
             }
             if verbose:
-                print(f"  meta.json: run_id={meta.run_id}, duration={meta.statistics.duration_ms}ms")
+                print(
+                    f"  meta.json: run_id={meta.run_id}, duration={meta.statistics.duration_ms}ms"
+                )
         except Exception as e:
             results["errors"].append(f"Could not parse meta.json: {e}")
             results["valid"] = False

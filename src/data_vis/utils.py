@@ -2,6 +2,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+# [TODO]: Update plotting scripts to handle IMU sensors with multiple axes.
+
 # [TODO]: Confirm all units
 SENSOR_UNITS = {
     "Accelerometer": "m/s²",
