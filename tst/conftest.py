@@ -11,42 +11,78 @@ from pathlib import Path
 import pytest
 
 
+THREE_AXIS_SENSOR_IDS = {7, 8, 9}
+
+
+def make_sensor_record(
+    timestamp_ms: int,
+    sensor_id: int,
+    kind: int,
+    values: tuple[float, ...],
+    flags: int = 0,
+) -> bytes:
+    """Pack one sensor_data_record_v2_t record."""
+    axis_count = 3 if sensor_id in THREE_AXIS_SENSOR_IDS else 1
+    padded_values = values + (0.0,) * (3 - len(values))
+    return struct.pack(
+        "<I B B B B 3f",
+        timestamp_ms,
+        sensor_id,
+        kind,
+        axis_count,
+        flags,
+        *padded_values[:3],
+    )
+
+
 @pytest.fixture
 def fast_data_bytes() -> bytes:
-    """Generate synthetic fast_data.bin content (IMU + Vibration)."""
+    """Generate synthetic fast_data.bin v2 content."""
     data = b""
     for i in range(100):
-        # IMU sample (sensor_id=0, 3-axis: x, y, z)
-        data += struct.pack(
-            "<I B 3x 3f", i, 0,
-            0.5 + i * 0.01, 0.1 + i * 0.01, -0.3 + i * 0.01,
-        )
-        # Vibration sample (sensor_id=1, scalar: data[0] only, rest zero)
-        data += struct.pack("<I B 3x 3f", i, 1, float(i % 2), 0.0, 0.0)
+        vibration = (float(i % 2),)
+        microphone = (0.25 + i * 0.01,)
+        magnetometer = (0.5 + i * 0.01, 0.1 + i * 0.01, -0.3 + i * 0.01)
+        gyroscope = (1.0 + i * 0.02, 2.0 + i * 0.02, 3.0 + i * 0.02)
+        accelerometer = (0.0 + i * 0.01, 0.1 + i * 0.01, 9.8 + i * 0.01)
+
+        for sensor_id, raw_values, processed_values in [
+            (1, vibration, (vibration[0] + 0.25,)),
+            (5, microphone, (microphone[0] * 2.0,)),
+            (7, magnetometer, tuple(v + 0.001 for v in magnetometer)),
+            (8, gyroscope, tuple(v * 0.5 for v in gyroscope)),
+            (9, accelerometer, tuple(v + 0.01 for v in accelerometer)),
+        ]:
+            data += make_sensor_record(i, sensor_id, 0, raw_values)
+            data += make_sensor_record(i, sensor_id, 1, processed_values, flags=0x02)
     return data
 
 
 @pytest.fixture
 def medium_data_bytes() -> bytes:
-    """Generate synthetic medium_data.bin content (Current + Photodiode)."""
+    """Generate synthetic medium_data.bin v2 content."""
     data = b""
     for i in range(50):
-        # Current sample (sensor_id=2)
-        data += struct.pack("<I B 3x f", i * 5, 2, 1.5 + i * 0.02)
-        # Photodiode sample (sensor_id=6)
-        data += struct.pack("<I B 3x f", i * 5, 6, 0.8 + i * 0.01)
+        current = 1.5 + i * 0.02
+        photodiode = 0.8 + i * 0.01
+        data += make_sensor_record(i * 5, 2, 0, (current,))
+        data += make_sensor_record(i * 5, 2, 1, (current + 0.1,), flags=0x02)
+        data += make_sensor_record(i * 5, 6, 0, (photodiode,))
+        data += make_sensor_record(i * 5, 6, 1, (photodiode,), flags=0x01)
     return data
 
 
 @pytest.fixture
 def slow_data_bytes() -> bytes:
-    """Generate synthetic slow_data.bin content (Pressure + Temperature)."""
+    """Generate synthetic slow_data.bin v2 content."""
     data = b""
     for i in range(20):
-        # Pressure sample (sensor_id=3)
-        data += struct.pack("<I B 3x f", i * 20, 3, 101.325 + i * 0.1)
-        # Temperature sample (sensor_id=4)
-        data += struct.pack("<I B 3x f", i * 20, 4, 25.0 + i * 0.5)
+        pressure = 101.325 + i * 0.1
+        temperature = 25.0 + i * 0.5
+        data += make_sensor_record(i * 20, 3, 0, (pressure,))
+        data += make_sensor_record(i * 20, 3, 1, (pressure + 0.05,), flags=0x02)
+        data += make_sensor_record(i * 20, 4, 0, (temperature,))
+        data += make_sensor_record(i * 20, 4, 1, (temperature,), flags=0x01)
     return data
 
 
@@ -66,14 +102,54 @@ def sample_metadata() -> dict:
         },
         "sensors": {
             "fast": [
-                {"id": 0, "name": "BNO085_IMU", "type": "IMU", "rate": 1000, "unit": "m/s^2"},
-                {"id": 1, "name": "SW420_Vibration", "type": "VIBRATION", "rate": 1000, "unit": "binary"},
+                {
+                    "id": 1,
+                    "name": "SW420_Vibration",
+                    "type": "VIBRATION",
+                    "rate": 1000,
+                    "unit": "binary",
+                },
+                {
+                    "id": 5,
+                    "name": "Microphone",
+                    "type": "MICROPHONE",
+                    "rate": 1000,
+                    "unit": "dBFS",
+                },
+                {
+                    "id": 7,
+                    "name": "Magnetometer",
+                    "type": "MAGNETOMETER",
+                    "rate": 1000,
+                    "unit": "uT",
+                },
+                {
+                    "id": 8,
+                    "name": "Gyroscope",
+                    "type": "GYROSCOPE",
+                    "rate": 1000,
+                    "unit": "rad/s",
+                },
+                {
+                    "id": 9,
+                    "name": "Accelerometer",
+                    "type": "ACCELEROMETER",
+                    "rate": 1000,
+                    "unit": "m/s^2",
+                },
             ],
             "medium": [
                 {"id": 2, "name": "ACS723_Current", "type": "CURRENT", "rate": 200, "unit": "A"},
+                {"id": 6, "name": "Photodiode", "type": "PHOTODIODE", "rate": 200, "unit": "V"},
             ],
             "slow": [
-                {"id": 3, "name": "MPL3115_Pressure", "type": "PRESSURE", "rate": 50, "unit": "kPa"},
+                {
+                    "id": 3,
+                    "name": "MPL3115_Pressure",
+                    "type": "PRESSURE",
+                    "rate": 50,
+                    "unit": "kPa",
+                },
                 {"id": 4, "name": "MCP9808_Temp", "type": "TEMPERATURE", "rate": 50, "unit": "C"},
             ],
         },
@@ -83,7 +159,7 @@ def sample_metadata() -> dict:
             "slow": "slow_data.bin",
         },
         "statistics": {
-            "total_samples": {"fast": 200, "medium": 100, "slow": 40},
+            "total_samples": {"fast": 1000, "medium": 200, "slow": 80},
             "duration_ms": 600000,
             "queue_overruns": 0,
             "sd_write_errors": 0,

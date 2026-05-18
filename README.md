@@ -24,6 +24,8 @@ pip install -r requirements.txt
 ```bash
 # Convert a single run directory
 shield-converter convert /path/to/UNIT_001_RUN_001 --output ./output
+shield-converter convert /Users/a11/Documents/UW/598/shield-data/data/5_5/RUN_249 --output ./output
+shield-converter convert /path/to/RUN_067 --output ./output --start-hour 0 --end-hour 12
 
 # Convert all runs from an SD card
 shield-converter convert-all /Volumes/SDCARD --output ./output
@@ -41,19 +43,47 @@ The converter expects run directories containing binary files from the ESP32 DAQ
 
 ```
 UNIT_001_RUN_001/
-├── fast_data.bin      # 1kHz: IMU + Vibration
-├── medium_data.bin    # 200Hz: Current
-├── slow_data.bin      # 50Hz: Pressure + Temperature
-└── meta.json          # Optional: firmware metadata
+├── fast_data.bin      # Vibration + Microphone + Magnetometer + Gyroscope + Accelerometer
+├── medium_data.bin    # Current + Photodiode
+├── slow_data.bin      # Pressure + Temperature
+├── meta.json          # Optional: firmware metadata
+└── events.log         # Optional: firmware event log
 ```
 
 ### Binary Record Formats
 
 | File | Sample Rate | Record Size | Sensors |
 |------|-------------|-------------|---------|
-| `fast_data.bin` | 1kHz | 12 bytes | IMU (m/s²), Vibration (binary) |
-| `medium_data.bin` | 200Hz | 8 bytes | Current (A) |
-| `slow_data.bin` | 50Hz | 12 bytes | Pressure (kPa), Temperature (°C) |
+| `fast_data.bin` | Fast tier | 20 bytes | Vibration, Microphone, Magnetometer, Gyroscope, Accelerometer |
+| `medium_data.bin` | Medium tier | 20 bytes | Current, Photodiode |
+| `slow_data.bin` | Slow tier | 20 bytes | Pressure, Temperature |
+
+All three files use the same little-endian packed v2 record:
+
+```c
+typedef struct __attribute__((packed)) {
+    uint32_t timestamp_ms;
+    uint8_t  sensor_id;
+    uint8_t  kind;        // 0=raw, 1=processed
+    uint8_t  axis_count;  // scalar=1, vector=3
+    uint8_t  flags;
+    float    data[3];
+} sensor_data_record_v2_t;
+```
+
+Sensor IDs:
+
+| ID | Sensor | CSV columns |
+|----|--------|-------------|
+| 1 | vibration | `timestamp_ms,value` |
+| 2 | current | `timestamp_ms,value` |
+| 3 | pressure | `timestamp_ms,value` |
+| 4 | temperature | `timestamp_ms,value` |
+| 5 | microphone | `timestamp_ms,value` |
+| 6 | photodiode | `timestamp_ms,value` |
+| 7 | magnetometer | `timestamp_ms,x,y,z` |
+| 8 | gyroscope | `timestamp_ms,x,y,z` |
+| 9 | accelerometer | `timestamp_ms,x,y,z` |
 
 ### Folder Naming Convention
 
@@ -67,17 +97,25 @@ Unit tracking uses folder names:
 output/
 ├── data/
 │   └── UNIT_0001_RUN_001/
-│       ├── imu.csv
 │       ├── vibration.csv
+│       ├── proc_vibration.csv
 │       ├── current.csv
+│       ├── proc_current.csv
 │       ├── pressure.csv
-│       └── temperature.csv
+│       ├── proc_pressure.csv
+│       ├── temperature.csv
+│       ├── proc_temperature.csv
+│       └── ...
 └── metadata/
     └── sessions/
         └── sessions.csv
 ```
 
 ### Per-Sensor CSV Format
+
+Raw records use `<sensor>.csv`; processed records use `proc_<sensor>.csv`.
+The column format is unchanged from earlier converter output so downstream code
+can keep reading the files the same way.
 
 ```csv
 timestamp_ms,value
@@ -86,13 +124,26 @@ timestamp_ms,value
 2,0.531
 ```
 
+Vector sensors use:
+
+```csv
+timestamp_ms,x,y,z
+0,0.01,0.02,9.81
+1,0.01,0.02,9.80
+```
+
 ### Session Metadata CSV
 
 ```csv
 session_id,unit_id,sensor_name,file_name,file_format,start_time_utc,duration_s,sampling_rate_hz,units,health_label
-RUN_001,unit_0001,imu,imu.csv,csv,2026-01-22T10:30:00Z,600,1000,m/s^2,unknown
+RUN_001,unit_0001,vibration,vibration.csv,csv,2026-01-22T10:30:00Z,600,1000,binary,unknown
+RUN_001,unit_0001,proc_vibration,proc_vibration.csv,csv,2026-01-22T10:30:00Z,600,1000,binary,unknown
 RUN_001,unit_0001,current,current.csv,csv,2026-01-22T10:30:00Z,600,200,A,unknown
 ```
+
+`duration_s` is calculated from each output CSV's actual timestamp span. If a
+fast data file ends earlier than medium or slow data, the fast sensors will show
+the shorter duration in metadata.
 
 ## CLI Reference
 
@@ -107,8 +158,16 @@ Options:
   -o, --output PATH        Output directory [default: ./output]
   -u, --unit-id TEXT       Override unit ID
   -l, --health-label TEXT  Health label: unknown|healthy|degraded|faulty [default: unknown]
+  --start-hour FLOAT       Start of export window relative to run start
+  --end-hour FLOAT         End of export window relative to run start
   -v, --verbose            Print verbose output
 ```
+
+If neither `--start-hour` nor `--end-hour` is provided, conversion exports all
+available data. If only `--end-hour 12` is provided, conversion exports `0h-12h`.
+If only `--start-hour 12` is provided, conversion exports from 12h to the end of
+available data. Window exports overwrite the run's existing CSV files in the
+output directory.
 
 ### `convert-all`
 
@@ -120,6 +179,8 @@ shield-converter convert-all <INPUT_DIR> [OPTIONS]
 Options:
   -o, --output PATH        Output directory [default: ./output]
   -l, --health-label TEXT  Health label for all sensors [default: unknown]
+  --start-hour FLOAT       Start of export window relative to each run start
+  --end-hour FLOAT         End of export window relative to each run start
   -v, --verbose            Print verbose output
 ```
 
@@ -153,6 +214,8 @@ output_files, sessions = convert_run(
     run_dir=Path("/path/to/UNIT_001_RUN_001"),
     output_dir=Path("./output"),
     health_label=HealthLabel.HEALTHY,
+    start_hour=0,
+    end_hour=12,
     verbose=True,
 )
 
@@ -170,13 +233,13 @@ for session in sessions:
 from shield_converter import parse_fast_data, parse_medium_data, parse_slow_data
 from pathlib import Path
 
-# Parse fast data (returns list of (timestamp_ms, sensor_id, value) tuples)
+# Parse fast data (returns a NumPy structured array of v2 records)
 records = parse_fast_data(Path("fast_data.bin"))
 
-# Parse medium data (returns list of (timestamp_ms, current) tuples)
+# Parse medium data
 records = parse_medium_data(Path("medium_data.bin"))
 
-# Parse slow data (returns list of (timestamp_ms, sensor_id, value) tuples)
+# Parse slow data
 records = parse_slow_data(Path("slow_data.bin"))
 ```
 

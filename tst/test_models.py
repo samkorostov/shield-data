@@ -87,8 +87,8 @@ class TestFirmwareMetadata:
         meta = FirmwareMetadata.model_validate(sample_metadata)
         assert meta.run_id == "RUN_001"
         assert meta.device_info.chip == "ESP32-S3"
-        assert len(meta.sensors["fast"]) == 2
-        assert len(meta.sensors["medium"]) == 1
+        assert len(meta.sensors["fast"]) == 5
+        assert len(meta.sensors["medium"]) == 2
         assert len(meta.sensors["slow"]) == 2
         assert meta.statistics.duration_ms == 600000
 

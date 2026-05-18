@@ -53,6 +53,16 @@ def convert(
         "--health-label", "-l",
         help="Health label for all sensors",
     ),
+    start_hour: Optional[float] = typer.Option(
+        None,
+        "--start-hour",
+        help="Start of export window in hours relative to run start",
+    ),
+    end_hour: Optional[float] = typer.Option(
+        None,
+        "--end-hour",
+        help="End of export window in hours relative to run start",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose", "-v",
@@ -65,13 +75,18 @@ def convert(
     Parses fast_data.bin, medium_data.bin, and slow_data.bin files
     and outputs per-sensor CSV files with metadata.
     """
-    output_files, sessions = convert_run(
-        run_dir=run_dir,
-        output_dir=output,
-        unit_id=unit_id,
-        health_label=health_label,
-        verbose=verbose,
-    )
+    try:
+        output_files, sessions = convert_run(
+            run_dir=run_dir,
+            output_dir=output,
+            unit_id=unit_id,
+            health_label=health_label,
+            start_hour=start_hour,
+            end_hour=end_hour,
+            verbose=verbose,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
     # Write session metadata for single run
     if sessions:
@@ -114,6 +129,16 @@ def convert_all(
         "--health-label", "-l",
         help="Health label for all sensors",
     ),
+    start_hour: Optional[float] = typer.Option(
+        None,
+        "--start-hour",
+        help="Start of export window in hours relative to each run start",
+    ),
+    end_hour: Optional[float] = typer.Option(
+        None,
+        "--end-hour",
+        help="End of export window in hours relative to each run start",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose", "-v",
@@ -126,12 +151,17 @@ def convert_all(
     Searches for directories containing binary data files and converts each.
     Outputs combined session metadata CSV.
     """
-    sessions = convert_all_runs(
-        input_dir=input_dir,
-        output_dir=output,
-        health_label=health_label,
-        verbose=verbose,
-    )
+    try:
+        sessions = convert_all_runs(
+            input_dir=input_dir,
+            output_dir=output,
+            health_label=health_label,
+            start_hour=start_hour,
+            end_hour=end_hour,
+            verbose=verbose,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
     typer.echo(f"Converted {len(sessions)} sensor sessions")
 
@@ -157,7 +187,10 @@ def validate(
     Checks file existence, record integrity, and metadata consistency.
     """
     typer.echo(f"Validating: {run_dir}")
-    typer.echo(f"  Expected record sizes: fast={FAST_RECORD_SIZE}, medium={MEDIUM_RECORD_SIZE}, slow={SLOW_RECORD_SIZE}")
+    typer.echo(
+        f"  Expected record sizes: fast={FAST_RECORD_SIZE}, "
+        f"medium={MEDIUM_RECORD_SIZE}, slow={SLOW_RECORD_SIZE}"
+    )
 
     results = validate_run(run_dir, verbose=verbose)
 
@@ -198,28 +231,29 @@ def info():
     """
     Display binary format information.
     """
-    import struct
-
     typer.echo("Binary Record Formats:")
     typer.echo("")
-    typer.echo("fast_data.bin (1kHz - IMU + Vibration + Microphone + Mag + Gyro + Accel):")
-    typer.echo(f"  Format: <I B 3x 3f (little-endian)")
+    typer.echo("All data files use sensor_data_record_v2_t:")
+    typer.echo("  Format: <I B B B B 3f (little-endian)")
     typer.echo(f"  Size: {FAST_RECORD_SIZE} bytes/record")
-    typer.echo("  Fields: timestamp_ms (uint32), sensor_id (uint8), reserved[3], data[3] (3x float)")
-    typer.echo("  3-axis sensors (x,y,z): 0=IMU, 7=Magnetometer, 8=Gyroscope, 9=Accelerometer")
-    typer.echo("  Scalar sensors (data[0]): 1=Vibration, 5=Microphone")
+    typer.echo("  Fields: timestamp_ms, sensor_id, kind, axis_count, flags, data[3]")
+    typer.echo("  kind: 0=raw, 1=processed")
+    typer.echo("  flags: 0x01=processed_same_as_raw, 0x02=filter_active, 0x04=filter_spike")
     typer.echo("")
-    typer.echo("medium_data.bin (200Hz - Current):")
-    typer.echo(f"  Format: <I f (little-endian)")
-    typer.echo(f"  Size: {MEDIUM_RECORD_SIZE} bytes/record")
-    typer.echo("  Fields: timestamp_ms (uint32), current (float)")
-    typer.echo("  Units: Amperes (A)")
+    typer.echo("fast_data.bin:")
+    typer.echo("  Sensors: 1=Vibration, 5=Microphone, 7=Magnetometer, 8=Gyroscope, 9=Accelerometer")
     typer.echo("")
-    typer.echo("slow_data.bin (50Hz - Pressure + Temperature):")
-    typer.echo(f"  Format: <I B 3x f (little-endian)")
-    typer.echo(f"  Size: {SLOW_RECORD_SIZE} bytes/record")
-    typer.echo("  Fields: timestamp_ms (uint32), sensor_id (uint8), reserved[3], data (float)")
-    typer.echo("  Sensors: 3=Pressure (kPa), 4=Temperature (C)")
+    typer.echo("medium_data.bin:")
+    typer.echo("  Sensors: 2=Current, 6=Photodiode")
+    typer.echo("")
+    typer.echo("slow_data.bin:")
+    typer.echo("  Sensors: 3=Pressure, 4=Temperature")
+    typer.echo("")
+    typer.echo("CSV output:")
+    typer.echo("  Raw: <sensor>.csv")
+    typer.echo("  Processed: proc_<sensor>.csv")
+    typer.echo("  Scalar columns: timestamp_ms,value")
+    typer.echo("  Vector columns: timestamp_ms,x,y,z")
 
 
 def main():
